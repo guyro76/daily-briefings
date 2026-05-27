@@ -1,0 +1,33 @@
+name: Evening Briefing
+
+on:
+  schedule:
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+
+jobs:
+  marketing:
+    name: Marketing Briefing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pytz
+      - name: Run marketing briefing
+        run: python scripts/marketing_briefing.py
+
+  tv-cinema:
+    name: TV Cinema Briefing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pytz
+      - name: Run TV/Cinema briefing
+        run: python scripts/tv_cinema_briefing.py
