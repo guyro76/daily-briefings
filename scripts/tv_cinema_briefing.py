@@ -6,6 +6,7 @@ No paid APIs - uses free Hebrew RSS feeds
 
 import json
 import smtplib
+import sys
 import urllib.request
 import urllib.parse
 from email.mime.multipart import MIMEMultipart
@@ -22,6 +23,8 @@ WA_URL = "https://7107.api.greenapi.com/waInstance7107593091/sendMessage/c2ee48c
 WA_CHAT_ID = "972546585113@c.us"
 GMAIL_USER = "guyro76@gmail.com"
 GMAIL_PASS = "yscqggafoomwrais"
+
+MIN_REAL_ITEMS = 3  # מינימום כתבות אמיתיות לפני שליחה
 
 TV_FEEDS = [
     "https://www.ynet.co.il/Integration/StoryRss3869.xml",
@@ -54,13 +57,14 @@ def fetch_rss(url, max_items=4):
                 desc = re.sub(r'<[^>]+>', '', desc).strip()[:150]
                 if title:
                     items.append((title, desc or title))
-            if len(items) >= max_items:
-                break
+                    if len(items) >= max_items:
+                        break
     except Exception as e:
         print(f"RSS error {url}: {e}")
     return items
 
 def get_news_items(feeds, count=3, keywords=None):
+    """Returns only real news items - no placeholders ever."""
     seen = set()
     results = []
     for feed_url in feeds:
@@ -70,13 +74,22 @@ def get_news_items(feeds, count=3, keywords=None):
                 if keywords is None or any(k.lower() in title.lower() for k in keywords):
                     seen.add(title)
                     results.append((title, desc))
-            if len(results) >= count:
-                break
+                    if len(results) >= count:
+                        break
         if len(results) >= count:
             break
-    while len(results) < count:
-        results.append(("עדכון בידור", "בדוק את הפיד שלך לעדכונים נוספים"))
     return results[:count]
+
+def validate_content(tv, cinema, platforms):
+    """Validates enough real content exists before sending."""
+    total_real = len(tv) + len(cinema) + len(platforms)
+    if total_real < MIN_REAL_ITEMS:
+        return False, f"only {total_real} real items (need {MIN_REAL_ITEMS})"
+    if len(tv) == 0:
+        return False, "TV section is empty"
+    if len(cinema) == 0:
+        return False, "Cinema section is empty"
+    return True, "OK"
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -113,11 +126,28 @@ def main():
     session = "בוקר" if is_morning else "ערב"
     footer = "עדכון הבא ב-18:00" if is_morning else "עדכון הבא ב-07:00"
     tip_label = "המלצת הבוקר" if is_morning else "המלצת הערב"
-    emoji = "🌅" if is_morning else "🌆"
+    emoji = "\U0001f305" if is_morning else "\U0001f306"
 
     tv = get_news_items(TV_FEEDS, 3, keywords=["סדרה","טלוויזיה","ערוץ","Netflix","HBO","Disney","series","TV","show"])
     cinema = get_news_items(CINEMA_FEEDS, 3, keywords=["סרט","קולנוע","trailer","film","movie","box office"])
     platforms = get_news_items(PLATFORM_FEEDS, 2, keywords=["Netflix","HOT","Apple","Disney","streaming","פלטפורמה"])
+
+    # === CONTENT VALIDATION - abort if not enough real content ===
+    is_valid, reason = validate_content(tv, cinema, platforms)
+    if not is_valid:
+        print(f"SEND ABORTED - insufficient content: {reason}")
+        print(f"TV: {len(tv)}, Cinema: {len(cinema)}, Platforms: {len(platforms)}")
+        sys.exit(1)
+
+    print(f"Content OK - sending ({len(tv)+len(cinema)+len(platforms)} real items)")
+
+    # Pad display only after validation passes - never with placeholder garbage
+    while len(tv) < 3:
+        tv.append(("—", "אין עדכונים נוספים"))
+    while len(cinema) < 3:
+        cinema.append(("—", "אין עדכונים נוספים"))
+    while len(platforms) < 2:
+        platforms.append(("—", "אין עדכונים נוספים"))
 
     tips = [
         "Netflix מוסיפה תוכן חדש כל שבוע - כדאי לבדוק בימי שישי",
@@ -181,26 +211,26 @@ body{{background:#f5f0fb;font-family:'Heebo',Arial,sans-serif;direction:rtl;text
 </style></head>
 <body><div class="wrap"><div class="card">
 <div class="hdr">
-  <div class="hdr-meta">&#x1F4C5; {date_he} | עדכון {session}</div>
-  <div class="hdr-title">{emoji} {greeting}</div>
-  <div class="hdr-sub">&#x1F3AC; טלוויזיה &#x2022; קולנוע &#x2022; ערוצים</div>
+<div class="hdr-meta">&#x1F4C5; {date_he} | עדכון {session}</div>
+<div class="hdr-title">{emoji} {greeting}</div>
+<div class="hdr-sub">&#x1F3AC; טלוויזיה &#x2022; קולנוע &#x2022; ערוצים</div>
 </div>
 <div class="stripe"></div>
 <div class="sec">
-  <div class="sec-hdr"><span class="sec-icon">&#x1F4FA;</span><span class="sec-title">טלוויזיה</span></div>
-  {html_items(tv)}
+<div class="sec-hdr"><span class="sec-icon">&#x1F4FA;</span><span class="sec-title">טלוויזיה</span></div>
+{html_items(tv)}
 </div>
 <div class="sec">
-  <div class="sec-hdr"><span class="sec-icon">&#x1F3AC;</span><span class="sec-title">קולנוע</span></div>
-  {html_items(cinema)}
+<div class="sec-hdr"><span class="sec-icon">&#x1F3AC;</span><span class="sec-title">קולנוע</span></div>
+{html_items(cinema)}
 </div>
 <div class="sec">
-  <div class="sec-hdr"><span class="sec-icon">&#x1F4E1;</span><span class="sec-title">ערוצים ופלטפורמות</span></div>
-  {html_items(platforms)}
+<div class="sec-hdr"><span class="sec-icon">&#x1F4E1;</span><span class="sec-title">ערוצים ופלטפורמות</span></div>
+{html_items(platforms)}
 </div>
 <div class="tip">
-  <div class="tip-lbl">&#x1F37F; {tip_label}</div>
-  <div class="tip-txt">{tip_text}</div>
+<div class="tip-lbl">&#x1F37F; {tip_label}</div>
+<div class="tip-txt">{tip_text}</div>
 </div>
 <div class="ftr">גיא רוזנברג &#169;2026 | {footer}</div>
 </div></div></body></html>"""
