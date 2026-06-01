@@ -6,12 +6,14 @@ No paid APIs - uses free Hebrew RSS feeds
 
 import json
 import smtplib
+import sys
 import urllib.request
 import urllib.parse
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime
 import xml.etree.ElementTree as ET
+import re
 import pytz
 
 # === CONFIG ===
@@ -21,6 +23,8 @@ WA_URL = "https://7107.api.greenapi.com/waInstance7107593091/sendMessage/c2ee48c
 WA_CHAT_ID = "972546585113@c.us"
 GMAIL_USER = "guyro76@gmail.com"
 GMAIL_PASS = "yscqggafoomwrais"
+
+MIN_REAL_ITEMS = 3  # מינימום כתבות אמיתיות לפני שליחה
 
 # === RSS SOURCES ===
 MARKETING_FEEDS = [
@@ -51,17 +55,17 @@ def fetch_rss(url, max_items=3):
             if title_el is not None:
                 title = (title_el.text or "").strip()[:80]
                 desc = (desc_el.text or title if desc_el is not None else title).strip()
-                import re
                 desc = re.sub(r'<[^>]+>', '', desc).strip()[:150]
                 if title:
                     items.append((title, desc or title))
-            if len(items) >= max_items:
-                break
+                    if len(items) >= max_items:
+                        break
     except Exception as e:
         print(f"RSS error {url}: {e}")
     return items
 
 def get_news_items(feeds, count=3, keywords=None):
+    """Returns only real news items - no placeholders ever."""
     seen = set()
     results = []
     for feed_url in feeds:
@@ -71,13 +75,20 @@ def get_news_items(feeds, count=3, keywords=None):
                 if keywords is None or any(k.lower() in title.lower() or k.lower() in desc.lower() for k in keywords):
                     seen.add(title)
                     results.append((title, desc))
-            if len(results) >= count:
-                break
+                    if len(results) >= count:
+                        break
         if len(results) >= count:
             break
-    while len(results) < count:
-        results.append(("עדכון שיווק דיגיטלי", "בדוק את הפיד שלך לעדכונים נוספים"))
     return results[:count]
+
+def validate_content(marketing, social, ai_news):
+    """Validates enough real content exists before sending."""
+    total_real = len(marketing) + len(social) + len(ai_news)
+    if total_real < MIN_REAL_ITEMS:
+        return False, f"only {total_real} real items (need {MIN_REAL_ITEMS})"
+    if len(marketing) == 0:
+        return False, "Marketing section is empty"
+    return True, "OK"
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -114,11 +125,28 @@ def main():
     session = "בוקר" if is_morning else "ערב"
     footer = "עדכון הבא ב-18:00" if is_morning else "עדכון הבא ב-07:00"
     tip_label = "טיפ הבוקר" if is_morning else "טיפ הערב"
-    emoji = "🌅" if is_morning else "🌆"
+    emoji = "\U0001f305" if is_morning else "\U0001f306"
 
     marketing = get_news_items(MARKETING_FEEDS, 3)
     social = get_news_items(SOCIAL_FEEDS, 3)
     ai_news = get_news_items(AI_FEEDS, 3, keywords=["AI","בינה","מלאכותי","GPT","LLM","אוטומציה"])
+
+    # === CONTENT VALIDATION - abort if not enough real content ===
+    is_valid, reason = validate_content(marketing, social, ai_news)
+    if not is_valid:
+        print(f"SEND ABORTED - insufficient content: {reason}")
+        print(f"Marketing: {len(marketing)}, Social: {len(social)}, AI: {len(ai_news)}")
+        sys.exit(1)
+
+    print(f"Content OK - sending ({len(marketing)+len(social)+len(ai_news)} real items)")
+
+    # Pad display only after validation passes - never with placeholder garbage
+    while len(marketing) < 3:
+        marketing.append(("—", "אין עדכונים נוספים"))
+    while len(social) < 3:
+        social.append(("—", "אין עדכונים נוספים"))
+    while len(ai_news) < 3:
+        ai_news.append(("—", "אין עדכונים נוספים"))
 
     tips = [
         "השתמש ב-A/B testing על כותרות מיילים",
@@ -182,26 +210,26 @@ body{{background:#f0f4f8;font-family:'Heebo',Arial,sans-serif;direction:rtl;text
 </style></head>
 <body><div class="wrap"><div class="card">
 <div class="hdr">
-  <div class="hdr-meta">&#x1F4C5; {date_he} | עדכון {session}</div>
-  <div class="hdr-title">{emoji} {greeting}</div>
-  <div class="hdr-sub">&#x26A1; שיווק דיגיטלי &#x2022; סושיאל &#x2022; AI</div>
+<div class="hdr-meta">&#x1F4C5; {date_he} | עדכון {session}</div>
+<div class="hdr-title">{emoji} {greeting}</div>
+<div class="hdr-sub">&#x26A1; שיווק דיגיטלי &#x2022; סושיאל &#x2022; AI</div>
 </div>
 <div class="stripe"></div>
 <div class="sec">
-  <div class="sec-hdr"><span class="sec-icon">&#x1F4E2;</span><span class="sec-title">שיווק דיגיטלי</span></div>
-  {html_items(marketing)}
+<div class="sec-hdr"><span class="sec-icon">&#x1F4E2;</span><span class="sec-title">שיווק דיגיטלי</span></div>
+{html_items(marketing)}
 </div>
 <div class="sec">
-  <div class="sec-hdr"><span class="sec-icon">&#x1F4F1;</span><span class="sec-title">סושיאל ורשתות</span></div>
-  {html_items(social)}
+<div class="sec-hdr"><span class="sec-icon">&#x1F4F1;</span><span class="sec-title">סושיאל ורשתות</span></div>
+{html_items(social)}
 </div>
 <div class="sec">
-  <div class="sec-hdr"><span class="sec-icon">&#x1F525;</span><span class="sec-title">AI וטרנדים</span></div>
-  {html_items(ai_news)}
+<div class="sec-hdr"><span class="sec-icon">&#x1F525;</span><span class="sec-title">AI וטרנדים</span></div>
+{html_items(ai_news)}
 </div>
 <div class="tip">
-  <div class="tip-lbl">&#x1F4A1; {tip_label}</div>
-  <div class="tip-txt">{tip_text}</div>
+<div class="tip-lbl">&#x1F4A1; {tip_label}</div>
+<div class="tip-txt">{tip_text}</div>
 </div>
 <div class="ftr">גיא רוזנברג &#169;2026 | {footer}</div>
 </div></div></body></html>"""
