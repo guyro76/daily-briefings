@@ -26,9 +26,10 @@ GMAIL_PASS = "yscqggafoomwrais"
 
 MIN_REAL_ITEMS = 3  # מינימום כתבות אמיתיות לפני שליחה
 
+# פידים בעברית ובינלאומיים לבידור
 TV_FEEDS = [
     "https://www.ynet.co.il/Integration/StoryRss3869.xml",
-    "https://rotter.net/rss/rss.xml",
+    "https://www.ynet.co.il/Integration/StoryRss1854.xml",
     "https://deadline.com/category/television/feed/",
 ]
 CINEMA_FEEDS = [
@@ -42,7 +43,7 @@ PLATFORM_FEEDS = [
     "https://techcrunch.com/tag/netflix/feed/",
 ]
 
-def fetch_rss(url, max_items=4):
+def fetch_rss(url, max_items=5):
     items = []
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -64,14 +65,15 @@ def fetch_rss(url, max_items=4):
     return items
 
 def get_news_items(feeds, count=3, keywords=None):
-    """Returns only real news items - no placeholders ever."""
+    """מחזיר כתבות אמיתיות בלבד — ללא placeholders."""
     seen = set()
     results = []
     for feed_url in feeds:
         items = fetch_rss(feed_url)
         for title, desc in items:
             if title not in seen:
-                if keywords is None or any(k.lower() in title.lower() for k in keywords):
+                # אם אין מילות מפתח — קח הכל. אם יש — סנן רק לפיהן
+                if keywords is None or any(k.lower() in title.lower() or k.lower() in desc.lower() for k in keywords):
                     seen.add(title)
                     results.append((title, desc))
                     if len(results) >= count:
@@ -81,14 +83,10 @@ def get_news_items(feeds, count=3, keywords=None):
     return results[:count]
 
 def validate_content(tv, cinema, platforms):
-    """Validates enough real content exists before sending."""
+    """בודק שיש מספיק תוכן אמיתי לפני שליחה."""
     total_real = len(tv) + len(cinema) + len(platforms)
     if total_real < MIN_REAL_ITEMS:
-        return False, f"only {total_real} real items (need {MIN_REAL_ITEMS})"
-    if len(tv) == 0:
-        return False, "TV section is empty"
-    if len(cinema) == 0:
-        return False, "Cinema section is empty"
+        return False, f"רק {total_real} כתבות (נדרשות {MIN_REAL_ITEMS})"
     return True, "OK"
 
 def send_telegram(message):
@@ -128,20 +126,21 @@ def main():
     tip_label = "המלצת הבוקר" if is_morning else "המלצת הערב"
     emoji = "\U0001f305" if is_morning else "\U0001f306"
 
-    tv = get_news_items(TV_FEEDS, 3, keywords=["סדרה","טלוויזיה","ערוץ","Netflix","HBO","Disney","series","TV","show"])
-    cinema = get_news_items(CINEMA_FEEDS, 3, keywords=["סרט","קולנוע","trailer","film","movie","box office"])
-    platforms = get_news_items(PLATFORM_FEEDS, 2, keywords=["Netflix","HOT","Apple","Disney","streaming","פלטפורמה"])
+    # ללא מילות מפתח — קח כל מה שיש מהפידים של בידור
+    tv = get_news_items(TV_FEEDS, 3)
+    cinema = get_news_items(CINEMA_FEEDS, 3)
+    platforms = get_news_items(PLATFORM_FEEDS, 2)
 
-    # === CONTENT VALIDATION - abort if not enough real content ===
+    # === בדיקת תוכן לפני שליחה ===
     is_valid, reason = validate_content(tv, cinema, platforms)
     if not is_valid:
-        print(f"SEND ABORTED - insufficient content: {reason}")
-        print(f"TV: {len(tv)}, Cinema: {len(cinema)}, Platforms: {len(platforms)}")
+        print(f"SEND ABORTED - {reason}")
+        print(f"טלוויזיה: {len(tv)}, קולנוע: {len(cinema)}, פלטפורמות: {len(platforms)}")
         sys.exit(1)
 
-    print(f"Content OK - sending ({len(tv)+len(cinema)+len(platforms)} real items)")
+    print(f"תוכן תקין — שולח ({len(tv)+len(cinema)+len(platforms)} כתבות)")
 
-    # Pad display only after validation passes - never with placeholder garbage
+    # מילוי ל-display בלבד אחרי validation
     while len(tv) < 3:
         tv.append(("—", "אין עדכונים נוספים"))
     while len(cinema) < 3:
@@ -153,10 +152,10 @@ def main():
         "Netflix מוסיפה תוכן חדש כל שבוע - כדאי לבדוק בימי שישי",
         "חפש סדרות ישראליות 2026 ב-YouTube",
         "Apple TV+ מציעה ניסיון חינם 7 ימים",
-        "שימוש ב-JustWatch עוזר למצוא איפה זמין כל סרט",
-        "HBO Max נקרא כעת Max - עדכן את הסימניות שלך",
-        "Letterboxd הוא הרשת החברתית הכי טובה לאוהבי קולנוע",
-        "פסטיבל קאן, ונציה ובברלין - שם מתגלים הסרטים הכי טובים",
+        "JustWatch עוזר למצוא איפה זמין כל סרט",
+        "HBO Max נקרא כעת Max",
+        "Letterboxd — הרשת החברתית הכי טובה לאוהבי קולנוע",
+        "פסטיבל קאן, ונציה ובברלין — שם מתגלים הסרטים הטובים ביותר",
     ]
     tip_text = tips[now.weekday()]
 
