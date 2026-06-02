@@ -1,7 +1,7 @@
 """
 daily-marketing-briefing - GitHub Actions version
 Runs at 04:00 UTC (07:00 IL) and 15:00 UTC (18:00 IL)
-No paid APIs - uses free Hebrew RSS feeds
+עברית בלבד — פידים ישראליים
 """
 
 import json
@@ -26,24 +26,33 @@ GMAIL_PASS = "yscqggafoomwrais"
 
 MIN_REAL_ITEMS = 3  # מינימום כתבות אמיתיות לפני שליחה
 
-# === RSS SOURCES ===
+# === פידים עבריים בלבד ===
 MARKETING_FEEDS = [
     "https://www.geektime.co.il/feed/",
     "https://www.calcalistech.com/rss/",
-    "https://nocamels.com/feed/",
+    "https://www.themarker.com/rss/technology",
 ]
 SOCIAL_FEEDS = [
     "https://www.geektime.co.il/feed/",
     "https://www.the7eye.org.il/feed",
-    "https://digital.calcalist.co.il/feed.xml",
+    "https://www.calcalist.co.il/rss/AjaxPage,7340,L-1,00.xml",
 ]
 AI_FEEDS = [
     "https://www.geektime.co.il/feed/",
-    "https://nocamels.com/feed/",
-    "https://techcrunch.com/category/artificial-intelligence/feed/",
+    "https://www.calcalistech.com/rss/",
+    "https://www.themarker.com/rss/technology",
 ]
 
-def fetch_rss(url, max_items=3):
+HEBREW_CHARS = set('אבגדהוזחטיכלמנסעפצקרשתךםןףץ')
+
+def is_hebrew(text):
+    """בודק שהטקסט בעברית — לפחות 30% תווים עבריים"""
+    if not text:
+        return False
+    heb = sum(1 for c in text if c in HEBREW_CHARS)
+    return heb / len(text) >= 0.10  # לפחות 10% עברית (כולל מספרים ורווחים)
+
+def fetch_rss(url, max_items=6):
     items = []
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -56,7 +65,7 @@ def fetch_rss(url, max_items=3):
                 title = (title_el.text or "").strip()[:80]
                 desc = (desc_el.text or title if desc_el is not None else title).strip()
                 desc = re.sub(r'<[^>]+>', '', desc).strip()[:150]
-                if title:
+                if title and is_hebrew(title):  # רק עברית
                     items.append((title, desc or title))
                     if len(items) >= max_items:
                         break
@@ -65,11 +74,11 @@ def fetch_rss(url, max_items=3):
     return items
 
 def get_news_items(feeds, count=3, keywords=None):
-    """Returns only real news items - no placeholders ever."""
+    """מחזיר כתבות עבריות אמיתיות בלבד."""
     seen = set()
     results = []
     for feed_url in feeds:
-        items = fetch_rss(feed_url, max_items=5)
+        items = fetch_rss(feed_url, max_items=8)
         for title, desc in items:
             if title not in seen:
                 if keywords is None or any(k.lower() in title.lower() or k.lower() in desc.lower() for k in keywords):
@@ -82,12 +91,12 @@ def get_news_items(feeds, count=3, keywords=None):
     return results[:count]
 
 def validate_content(marketing, social, ai_news):
-    """Validates enough real content exists before sending."""
+    """בודק שיש מספיק תוכן עברי לפני שליחה."""
     total_real = len(marketing) + len(social) + len(ai_news)
     if total_real < MIN_REAL_ITEMS:
-        return False, f"only {total_real} real items (need {MIN_REAL_ITEMS})"
+        return False, f"רק {total_real} כתבות (נדרשות {MIN_REAL_ITEMS})"
     if len(marketing) == 0:
-        return False, "Marketing section is empty"
+        return False, "סעיף שיווק ריק"
     return True, "OK"
 
 def send_telegram(message):
@@ -129,18 +138,17 @@ def main():
 
     marketing = get_news_items(MARKETING_FEEDS, 3)
     social = get_news_items(SOCIAL_FEEDS, 3)
-    ai_news = get_news_items(AI_FEEDS, 3, keywords=["AI","בינה","מלאכותי","GPT","LLM","אוטומציה"])
+    ai_news = get_news_items(AI_FEEDS, 3, keywords=["AI","בינה","מלאכותי","GPT","אוטומציה","טכנולוגיה","סטארט"])
 
-    # === CONTENT VALIDATION - abort if not enough real content ===
+    # === בדיקת תוכן לפני שליחה ===
     is_valid, reason = validate_content(marketing, social, ai_news)
     if not is_valid:
-        print(f"SEND ABORTED - insufficient content: {reason}")
-        print(f"Marketing: {len(marketing)}, Social: {len(social)}, AI: {len(ai_news)}")
+        print(f"SEND ABORTED - {reason}")
+        print(f"שיווק: {len(marketing)}, סושיאל: {len(social)}, AI: {len(ai_news)}")
         sys.exit(1)
 
-    print(f"Content OK - sending ({len(marketing)+len(social)+len(ai_news)} real items)")
+    print(f"תוכן תקין — שולח ({len(marketing)+len(social)+len(ai_news)} כתבות)")
 
-    # Pad display only after validation passes - never with placeholder garbage
     while len(marketing) < 3:
         marketing.append(("—", "אין עדכונים נוספים"))
     while len(social) < 3:
@@ -154,7 +162,7 @@ def main():
         "תוכן וידאו קצר מייצר פי 3 engagement",
         "השתמש ב-Google Trends לזיהוי נושאים חמים",
         "פרסם Stories לפחות פעמיים ביום",
-        "LinkedIn מוביל ב-B2B",
+        "LinkedIn מוביל ב-B2B — פרסם שם היום",
         "השתמש ב-Canva AI לעיצוב מהיר",
     ]
     tip_text = tips[now.weekday()]
@@ -170,7 +178,7 @@ def main():
 סושיאל ורשתות:
 {fmt(social)}
 
-AI וטרנדים:
+AI וטכנולוגיה:
 {fmt(ai_news)}
 
 {tip_label}: {tip_text}
@@ -224,7 +232,7 @@ body{{background:#f0f4f8;font-family:'Heebo',Arial,sans-serif;direction:rtl;text
 {html_items(social)}
 </div>
 <div class="sec">
-<div class="sec-hdr"><span class="sec-icon">&#x1F525;</span><span class="sec-title">AI וטרנדים</span></div>
+<div class="sec-hdr"><span class="sec-icon">&#x1F525;</span><span class="sec-title">AI וטכנולוגיה</span></div>
 {html_items(ai_news)}
 </div>
 <div class="tip">
@@ -234,7 +242,7 @@ body{{background:#f0f4f8;font-family:'Heebo',Arial,sans-serif;direction:rtl;text
 <div class="ftr">גיא רוזנברג &#169;2026 | {footer}</div>
 </div></div></body></html>"""
 
-    subject = f"{emoji} עדכון {session} - שיווק דיגיטלי | {date_dmy}"
+    subject = f"{emoji} עדכון {session} — שיווק דיגיטלי | {date_dmy}"
     send_telegram(plain)
     try:
         send_whatsapp(plain)
