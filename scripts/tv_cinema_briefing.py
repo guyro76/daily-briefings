@@ -1,22 +1,16 @@
-"""
-daily-tv-cinema-briefing - GitHub Actions version
-Runs at 04:00 UTC (07:00 IL) and 15:00 UTC (18:00 IL)
-No paid APIs - uses free Hebrew RSS feeds
-"""
-
-import json
-import smtplib
-import sys
-import urllib.request
-import urllib.parse
+"""TV & Cinema Daily Briefing — Hebrew only, translated, with images"""
+import sys, os, json, smtplib, re
+import urllib.request, urllib.parse
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime
-import xml.etree.ElementTree as ET
-import re
 import pytz
 
-# === CONFIG ===
+sys.path.insert(0, os.path.dirname(__file__))
+from utils import (parse_rss, fetch_article_meta, translate_he, is_hebrew,
+                   is_banned, load_cache, save_cache, current_session,
+                   mark_sent, is_seen_morning)
+
 TELEGRAM_TOKEN = "8556094142:AAF_LPLMUjOvUfLmTdLEe2_6RUTfigFs4Z4"
 TELEGRAM_CHAT_ID = "8526599959"
 WA_URL = "https://7107.api.greenapi.com/waInstance7107593091/sendMessage/c2ee48c174284d658f942d78126eea979cf3adbd8a33491f8d"
@@ -24,227 +18,155 @@ WA_CHAT_ID = "972546585113@c.us"
 GMAIL_USER = "guyro76@gmail.com"
 GMAIL_PASS = "yscqggafoomwrais"
 
-MIN_REAL_ITEMS = 3  # מינימום כתבות אמיתיות לפני שליחה
+BANNED_ENT = {'war','military','combat','attack','hostage','massacre','shooting','bombing'}
+TV_FEEDS   = ["https://www.hollywoodreporter.com/feed/", "https://deadline.com/category/television/feed/"]
+FILM_FEEDS = ["https://www.hollywoodreporter.com/feed/", "https://deadline.com/category/film/feed/"]
+STREAM_FEEDS = ["https://variety.com/v/television/feed/", "https://deadline.com/category/streaming/feed/"]
 
-# פידים בעברית ובינלאומיים לבידור
-TV_FEEDS = [
-    "https://www.ynet.co.il/Integration/StoryRss3869.xml",
-    "https://www.ynet.co.il/Integration/StoryRss1854.xml",
-    "https://deadline.com/category/television/feed/",
-]
-CINEMA_FEEDS = [
-    "https://www.ynet.co.il/Integration/StoryRss3869.xml",
-    "https://variety.com/v/film/feed/",
-    "https://deadline.com/category/film/feed/",
-]
-PLATFORM_FEEDS = [
-    "https://www.ynet.co.il/Integration/StoryRss3869.xml",
-    "https://variety.com/v/digital/feed/",
-    "https://techcrunch.com/tag/netflix/feed/",
-]
+TV_KW    = ["series","season","episode","premiere","TV","show","drama","comedy","HBO","Netflix","Disney","Apple","streaming"]
+FILM_KW  = ["film","movie","cinema","box office","feature","documentary","thriller","director","cast","trailer"]
+STREAM_KW= ["Netflix","Disney+","HBO Max","Apple TV","Prime Video","Hulu","streaming","release","debut"]
 
-def fetch_rss(url, max_items=5):
-    items = []
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        data = urllib.request.urlopen(req, timeout=10).read()
-        root = ET.fromstring(data)
-        for item in root.iter("item"):
-            title_el = item.find("title")
-            desc_el = item.find("description")
-            if title_el is not None:
-                title = (title_el.text or "").strip()[:80]
-                desc = (desc_el.text or "" if desc_el is not None else "").strip()
-                desc = re.sub(r'<[^>]+>', '', desc).strip()[:150]
-                if title:
-                    items.append((title, desc or title))
-                    if len(items) >= max_items:
-                        break
-    except Exception as e:
-        print(f"RSS error {url}: {e}")
-    return items
+def banned_en(text):
+    tl = (text or '').lower()
+    return any(w in tl for w in BANNED_ENT) or is_banned(text)
 
-def get_news_items(feeds, count=3, keywords=None):
-    """מחזיר כתבות אמיתיות בלבד — ללא placeholders."""
+def get_items(feeds, kw, count, cache, session):
     seen = set()
     results = []
-    for feed_url in feeds:
-        items = fetch_rss(feed_url)
-        for title, desc in items:
-            if title not in seen:
-                # אם אין מילות מפתח — קח הכל. אם יש — סנן רק לפיהן
-                if keywords is None or any(k.lower() in title.lower() or k.lower() in desc.lower() for k in keywords):
-                    seen.add(title)
-                    results.append((title, desc))
-                    if len(results) >= count:
-                        break
-        if len(results) >= count:
-            break
-    return results[:count]
+    for url in feeds:
+        for title, desc, link, rss_img in parse_rss(url, 20):
+            if not title or title in seen: continue
+            if banned_en(title) or banned_en(desc): continue
+            if kw and not any(k.lower() in title.lower() or k.lower() in desc.lower() for k in kw): continue
+            if session == 'evening' and is_seen_morning(title, cache):
+                print(f"SKIP dup: {title[:50]}"); continue
+            # Translate
+            title_he = translate_he(title) if not is_hebrew(title) else title
+            desc_he  = translate_he(desc)  if not is_hebrew(desc)  else desc
+            # Enrich
+            img = rss_img
+            if link:
+                art_img, art_desc = fetch_article_meta(link)
+                if art_img and not img: img = art_img
+                if art_desc and len(art_desc) > len(desc_he):
+                    art_desc_he = translate_he(art_desc) if not is_hebrew(art_desc) else art_desc
+                    desc_he = art_desc_he
+            seen.add(title)
+            results.append({"title": title_he, "desc": desc_he[:400], "link": link, "img": img})
+            if len(results) >= count: break
+        if len(results) >= count: break
+    return results
 
-def validate_content(tv, cinema, platforms):
-    """בודק שיש מספיק תוכן אמיתי לפני שליחה."""
-    total_real = len(tv) + len(cinema) + len(platforms)
-    if total_real < MIN_REAL_ITEMS:
-        return False, f"רק {total_real} כתבות (נדרשות {MIN_REAL_ITEMS})"
-    return True, "OK"
+FALLBACK = {"title": "—", "desc": "אין עדכונים בידורניים נוספים כרגע.", "link": "", "img": None}
 
-def send_telegram(message):
+def html_item(item, border, bg):
+    img_tag = (f'<img src="{item["img"]}" style="width:100%;border-radius:8px;margin-bottom:10px;'
+               f'max-height:200px;object-fit:cover" onerror="this.style.display=\'none\'">'
+               if item.get("img") else "")
+    return (f'<div style="margin-bottom:12px;background:{bg};border-radius:10px;'
+            f'border-right:4px solid {border};padding:14px 16px">'
+            f'{img_tag}'
+            f'<div style="font-size:13px;font-weight:900;color:{border};margin-bottom:6px">{item["title"][:80]}</div>'
+            f'<div style="font-size:14px;color:#1a2e2c;line-height:1.75;font-weight:700">{item["desc"]}</div>'
+            f'</div>')
+
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": message}).encode()
-    req = urllib.request.Request(url, data=data)
-    res = json.loads(urllib.request.urlopen(req, timeout=15).read())
+    data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": msg}).encode()
+    res = json.loads(urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=15).read())
     print(f"Telegram: ok={res.get('ok')}")
 
-def send_whatsapp(message):
-    data = json.dumps({"chatId": WA_CHAT_ID, "message": message}).encode()
+def send_whatsapp(msg):
+    data = json.dumps({"chatId": WA_CHAT_ID, "message": msg}).encode()
     req = urllib.request.Request(WA_URL, data=data, headers={"Content-Type": "application/json"})
     res = json.loads(urllib.request.urlopen(req, timeout=15).read())
-    print(f"WhatsApp: {res.get('idMessage', res)}")
+    print(f"WhatsApp: {res.get('idMessage','?')}")
 
 def send_email(subject, html_body):
     msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = GMAIL_USER
-    msg['To'] = GMAIL_USER
+    msg['Subject'] = subject; msg['From'] = GMAIL_USER; msg['To'] = GMAIL_USER
     msg.attach(MIMEText(html_body, 'html', 'utf-8'))
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-        server.login(GMAIL_USER, GMAIL_PASS)
-        server.sendmail(GMAIL_USER, GMAIL_USER, msg.as_string())
-    print("Email sent successfully")
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
+        s.login(GMAIL_USER, GMAIL_PASS)
+        s.sendmail(GMAIL_USER, GMAIL_USER, msg.as_string())
+    print("Email sent")
 
 def main():
     il = pytz.timezone('Asia/Jerusalem')
     now = datetime.now(il)
-    is_morning = now.hour < 12
+    session = current_session()
+    is_morning = session == 'morning'
     months = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני","יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"]
-    date_he = f"{now.day} {months[now.month-1]} {now.year}"
+    date_he  = f"{now.day} {months[now.month-1]} {now.year}"
     date_dmy = now.strftime("%d/%m/%Y")
     greeting = "בוקר טוב גיא!" if is_morning else "ערב טוב גיא!"
-    session = "בוקר" if is_morning else "ערב"
-    footer = "עדכון הבא ב-18:00" if is_morning else "עדכון הבא ב-07:00"
-    tip_label = "המלצת הבוקר" if is_morning else "המלצת הערב"
-    emoji = "\U0001f305" if is_morning else "\U0001f306"
-
-    # ללא מילות מפתח — קח כל מה שיש מהפידים של בידור
-    tv = get_news_items(TV_FEEDS, 3)
-    cinema = get_news_items(CINEMA_FEEDS, 3)
-    platforms = get_news_items(PLATFORM_FEEDS, 2)
-
-    # === בדיקת תוכן לפני שליחה ===
-    is_valid, reason = validate_content(tv, cinema, platforms)
-    if not is_valid:
-        print(f"SEND ABORTED - {reason}")
-        print(f"טלוויזיה: {len(tv)}, קולנוע: {len(cinema)}, פלטפורמות: {len(platforms)}")
-        sys.exit(1)
-
-    print(f"תוכן תקין — שולח ({len(tv)+len(cinema)+len(platforms)} כתבות)")
-
-    # מילוי ל-display בלבד אחרי validation
-    while len(tv) < 3:
-        tv.append(("—", "אין עדכונים נוספים"))
-    while len(cinema) < 3:
-        cinema.append(("—", "אין עדכונים נוספים"))
-    while len(platforms) < 2:
-        platforms.append(("—", "אין עדכונים נוספים"))
-
-    tips = [
-        "Netflix מוסיפה תוכן חדש כל שבוע - כדאי לבדוק בימי שישי",
-        "חפש סדרות ישראליות 2026 ב-YouTube",
-        "Apple TV+ מציעה ניסיון חינם 7 ימים",
-        "JustWatch עוזר למצוא איפה זמין כל סרט",
-        "HBO Max נקרא כעת Max",
-        "Letterboxd — הרשת החברתית הכי טובה לאוהבי קולנוע",
-        "פסטיבל קאן, ונציה ובברלין — שם מתגלים הסרטים הטובים ביותר",
-    ]
-    tip_text = tips[now.weekday()]
-
-    def fmt(items):
-        return "\n".join(f"* {t}: {d[:100]}" for t, d in items)
-
-    plain = f"""{emoji} {greeting} - טלוויזיה וקולנוע {date_he}
-
-טלוויזיה:
-{fmt(tv)}
-
-קולנוע:
-{fmt(cinema)}
-
-ערוצים ופלטפורמות:
-{fmt(platforms)}
-
-{tip_label}: {tip_text}
-{footer}"""
-
-    def html_items(items):
-        html = ""
-        for t, d in items:
-            html += f'<div class="item"><div class="item-label">{t[:60]}</div><div class="item-text">{d[:150]}</div></div>'
-        return html
-
-    html = f"""<!DOCTYPE html>
-<html dir="rtl" lang="he">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;700;800;900&display=swap" rel="stylesheet">
-<style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#f5f0fb;font-family:'Heebo',Arial,sans-serif;direction:rtl;text-align:right}}
-.wrap{{padding:20px 12px}}
-.card{{max-width:600px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 32px rgba(74,20,140,.15)}}
-.hdr{{background:linear-gradient(135deg,#2a0745 0%,#6a1b9a 60%,#9c27b0 100%);padding:20px 24px 18px}}
-.hdr-meta{{font-size:12px;font-weight:700;color:#e1bee7;letter-spacing:1px;margin-bottom:6px}}
-.hdr-title{{font-size:24px;font-weight:900;color:#fff;margin-bottom:4px}}
-.hdr-sub{{font-size:14px;font-weight:700;color:#f3e5f5}}
-.stripe{{height:4px;background:linear-gradient(90deg,#4a148c,#9c27b0,#ce93d8,#9c27b0,#4a148c)}}
-.sec{{padding:18px 24px 14px;border-bottom:1px solid #f3e5f5}}
-.sec-hdr{{display:flex;align-items:center;gap:10px;flex-direction:row-reverse;justify-content:flex-end;margin-bottom:14px}}
-.sec-icon{{font-size:20px}}
-.sec-title{{font-size:17px;font-weight:900;color:#4a148c}}
-.item{{margin-bottom:10px;background:#fdf7ff;border-radius:10px;border-right:4px solid #9c27b0;padding:12px 14px}}
-.item-label{{font-size:12px;font-weight:900;color:#6a1b9a;letter-spacing:1px;margin-bottom:4px}}
-.item-text{{font-size:15px;color:#1a0a2e;line-height:1.65;font-weight:700}}
-.tip{{margin:10px 24px 20px;background:#2a0745;border-radius:12px;padding:16px 18px}}
-.tip-lbl{{font-size:11px;font-weight:900;color:#ce93d8;letter-spacing:2px;margin-bottom:8px}}
-.tip-txt{{font-size:15px;color:#fff;line-height:1.65;font-weight:700}}
-.ftr{{background:#f9f0ff;padding:14px 24px;text-align:center;font-size:12px;font-weight:700;color:#5B2C6F;border-top:2px solid #e1bee7}}
-</style></head>
-<body><div class="wrap"><div class="card">
+    sess     = "בוקר" if is_morning else "ערב"
+    footer   = "עדכון הבא ב-18:00" if is_morning else "עדכון הבא ב-07:00"
+    emoji    = "🌅" if is_morning else "🌆"
+    tip_lbl  = "טיפ הבוקר" if is_morning else "טיפ הערב"
+    tips = ["סדרות קצרות (6–8 פרקים) מקבלות ביקורות טובות יותר בממוצע",
+            "הרישום ל-JustWatch עוזר לעקוב אחרי מה שיצא בכל הפלטפורמות",
+            "Netflix ישראל משחררת תוכן ישראלי בדרך כלל ביום רביעי",
+            "Letterboxd היא הרשת החברתית הטובה ביותר לחובבי קולנוע",
+            "HOT VOD מוסיפה סדרות חדשות בכל שישי",
+            "כאן 11 מפרסמת לוח שידורים שבועי באתר שלה",
+            "יום ראשון הוא היום עם הכי הרבה פרמיירות בנטפליקס העולמי"]
+    tip = tips[now.weekday()]
+    cache = load_cache()
+    tv_items     = get_items(TV_FEEDS,     TV_KW,     3, cache, session)
+    film_items   = get_items(FILM_FEEDS,   FILM_KW,   3, cache, session)
+    stream_items = get_items(STREAM_FEEDS, STREAM_KW, 3, cache, session)
+    total = len([x for x in tv_items+film_items+stream_items if x['title'] != '—'])
+    if total < 3:
+        print(f"ABORT: only {total} real items"); sys.exit(1)
+    while len(tv_items)<3:     tv_items.append(FALLBACK)
+    while len(film_items)<3:   film_items.append(FALLBACK)
+    while len(stream_items)<3: stream_items.append(FALLBACK)
+    def fmt(items): return "\n".join(f"• {i['title']}: {i['desc'][:120]}" for i in items)
+    plain = (f"{emoji} {greeting} — טלוויזיה וקולנוע | {date_he}\n\n"
+             f"📺 סדרות טלוויזיה:\n{fmt(tv_items)}\n\n"
+             f"🎬 קולנוע:\n{fmt(film_items)}\n\n"
+             f"🎞 פלטפורמות סטאריאאאפ:\n{vfmt(stream_items)}\n\n"
+             f"💡 {tip_lbl}: {tip}\n{footer}")
+    html_body = f"""<!DOCTYPE html><html dir="rtl" lang="he">
+<head><meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;700;900&display=swap" rel="stylesheet">
+<style>body{{background:#f0f4f8;font-family:'Heebo',Arial,sans-serif;direction:rtl;margin:0;padding:20px 12px}}
+.card{{max-width:600px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.12)}}
+.hdr{{background:linear-gradient(135deg,#1a237e,#283593,#3949ab);padding:20px 24px}}
+.stripe{{height:4px;background:linear-gradient(90deg,#1a237e,#7986cb,#e040fb,#7986cb,#1a237e)}}
+.sec{{padding:16px 24px 12px;border-bottom:1px solid #eee}}
+.sec-title{{font-size:17px;font-weight:900;margin-bottom:12px}}
+.tip{{margin:10px 24px 20px;background:#1a237e;border-radius:12px;padding:16px 18px}}
+.ftr{{background:#f7f9fc;padding:14px;text-align:center;font-size:12px;font-weight:700;color:#5B2C6F}}</style>
+</head><body><div class="card">
 <div class="hdr">
-<div class="hdr-meta">&#x1F4C5; {date_he} | עדכון {session}</div>
-<div class="hdr-title">{emoji} {greeting}</div>
-<div class="hdr-sub">&#x1F3AC; טלוויזיה &#x2022; קולנוע &#x2022; ערוצים</div>
-</div>
-<div class="stripe"></div>
-<div class="sec">
-<div class="sec-hdr"><span class="sec-icon">&#x1F4FA;</span><span class="sec-title">טלוויזיה</span></div>
-{html_items(tv)}
-</div>
-<div class="sec">
-<div class="sec-hdr"><span class="sec-icon">&#x1F3AC;</span><span class="sec-title">קולנוע</span></div>
-{html_items(cinema)}
-</div>
-<div class="sec">
-<div class="sec-hdr"><span class="sec-icon">&#x1F4E1;</span><span class="sec-title">ערוצים ופלטפורמות</span></div>
-{html_items(platforms)}
-</div>
+  <div style="font-size:12px;font-weight:700;color:#9fa8da;margin-bottom:6px">📅 {date_he} | עדכון {sess}</div>
+  <div style="font-size:24px;font-weight:900;color:#fff;margin-bottom:4px">{emoji} {greeting}</div>
+  <div style="font-size:14px;font-weight:700;color:#c5cae9">🎬 טלוויזיה • קולנוע • סטרימינג</div>
+</div><div class="stripe"></div>
+<div class="sec"><div class="sec-title" style="color:#283593">📺 סדרות טלוויזיה</div>
+{''.join(html_item(i,'#3949ab','#f0f2ff') for i in tv_items)}</div>
+<div class="sec"><div class="sec-title" style="color:#6a1b9a">🎬 קולנוע</div>
+{''.join(html_item(i,'#8e24aa','#fdf4ff') for i in film_items)}</div>
+<div class="sec"><div class="sec-title" style="color:#c62828">🎞 פלטפורמות סטאריאאאפ</div>
+''.join(html_item(i,'#e53935','#fff5f5') for i in stream_items)}</div>
 <div class="tip">
-<div class="tip-lbl">&#x1F37F; {tip_label}</div>
-<div class="tip-txt">{tip_text}</div>
+  <div style="font-size:11px;font-weight:900;color:#9fa8da;letter-spacing:2px;margin-bottom:8px">💡 {tip_lbl}</div>
+  <div style="font-size:16px;color:#fff;line-height:1.65;font-weight:700">{tip}</div>
 </div>
-<div class="ftr">גיא רוזנברג &#169;2026 | {footer}</div>
-</div></div></body></html>"""
-
-    subject = f"{emoji} עדכון בידור {session} | {date_dmy}"
+  <div class="ftr">גיא רוזנברג ©2026 | {footer}</div>
+</div></body></html>"""
+    subject = f"{emoji} עדכון {sess} — טלוויזיה וקולנוע | {date_dmy}"
     send_telegram(plain)
-    try:
-        send_whatsapp(plain)
-    except Exception as e:
-        print(f"WhatsApp error: {e}")
-    try:
-        send_email(subject, html)
-    except Exception as e:
-        print(f"Email error: {e}")
-    print(f"Done - {date_he} {session}")
+    try: send_whatsapp(plain)
+    except Exception as e: print(f"WA: {e}")
+    try: send_email(subject, html_body)
+    except Exception as e: print(f"Email: {e}")
+    all_titles = [i['title'] for i in tv_items+film_items+stream_items]
+    save_cache(mark_sent(all_titles, cache, session))
+    print(f"Done {date_he} {sess}")
 
 if __name__ == "__main__":
     main()
