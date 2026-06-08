@@ -127,7 +127,7 @@ def main():
     plain = (f"{emoji} {greeting} — טלוויזיה וקולנוע | {date_he}\n\n"
              f"📺 סדרות טלוויזיה:\n{fmt(tv_items)}\n\n"
              f"🎬 קולנוע:\n{fmt(film_items)}\n\n"
-             f"🎞 פלטפורמות סטאריאאאפ:\n{vfmt(stream_items)}\n\n"
+             f"🎞 פלטפורמות סטאריאאאפ:\n{fmt(stream_items)}\n\n"
              f"💡 {tip_lbl}: {tip}\n{footer}")
     html_body = f"""<!DOCTYPE html><html dir="rtl" lang="he">
 <head><meta charset="UTF-8">
