@@ -1,8 +1,9 @@
-"""Personal Briefing — Weather + Calendar (iCal) + Daily Tip"""
-import sys, os, json, smtplib, re
+"""Personal Briefing — Weather + Calendar + Medical + Webinars + Packages"""
+import sys, os, json, smtplib, re, imaplib, email as emaillib
 import urllib.request, urllib.parse
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.header import decode_header
 from datetime import datetime, date, timedelta
 import pytz
 
@@ -15,6 +16,15 @@ WA_URL = "https://7107.api.greenapi.com/waInstance7107593091/sendMessage/c2ee48c
 WA_CHAT_ID = "972546585113@c.us"
 GMAIL_USER = "guyro76@gmail.com"
 GMAIL_PASS = "yscqggafoomwrais"
+
+MEDICAL_KW   = ["רופא","מרפאה","בית חולים","בדיקה","קופת חולים","כללית","מאוחדת","ניתוח",
+                "doctor","hospital","clinic","blood test","ultrasound","mri","ct scan","specialist"]
+WEBINAR_KW   = ["וובינר","webinar","zoom","google meet","teams","workshop","הרצאה","כנס",
+                "סדנה","seminar","conference","meetup","online","live","שידור"]
+PACKAGE_SENDERS = ["aliexpress","alimail","israel post","israelpost","il post","hadomain",
+                   "dhl","fedex","ups","usps","tracking","shipment","delivery","משלוח","חבילה"]
+PACKAGE_SUBJECTS = ["tracking","shipment","delivery","your order","package","חבילה","משלוח",
+                    "עדכון הזמנה","הזמנה שלך","נשלחה","הגיעה","collected"]
 
 def get_weather(city_en, city_he):
     try:
@@ -30,21 +40,17 @@ def get_weather(city_en, city_he):
         print(f"Weather error {city_he}: {e}")
         return f"{city_he}: מזג האוויר אינו זמין"
 
-def parse_ical_events(ical_url):
-    """Parse iCal URL and return today + tomorrow events"""
+def parse_ical_all(ical_url, days_ahead=30):
+    """Return all events in the next N days, categorized"""
     try:
         req = urllib.request.Request(ical_url, headers={"User-Agent": "Mozilla/5.0"})
         raw = urllib.request.urlopen(req, timeout=10).read().decode('utf-8', 'replace')
-        
         il = pytz.timezone('Asia/Jerusalem')
         now = datetime.now(il)
         today = now.date()
-        tomorrow = today + timedelta(days=1)
-        
+        end_date = today + timedelta(days=days_ahead)
         events = []
-        # Parse VEVENT blocks manually (no external library needed)
-        vevent_blocks = re.findall(r'BEGIN:VEVENT(.*?)END:VEVENT', raw, re.DOTALL)
-        for block in vevent_blocks:
+        for block in re.findall(r'BEGIN:VEVENT(.*?)END:VEVENT', raw, re.DOTALL):
             summary_m = re.search(r'SUMMARY[^:]*:(.*?)(?:\r?\n[A-Z])', block + '\nX', re.DOTALL)
             dtstart_m = re.search(r'DTSTART[^:]*:([\dTZ]+)', block)
             if not summary_m or not dtstart_m: continue
@@ -60,22 +66,81 @@ def parse_ical_events(ical_url):
                 else:
                     event_date = datetime.strptime(dtstart_raw[:8], '%Y%m%d').date()
                     time_str = 'כל היום'
-                if event_date == today:
-                    events.append(f"היום {time_str} — {summary}")
-                elif event_date == tomorrow:
-                    events.append(f"מחר {time_str} — {summary}")
-            except:
-                continue
-        return events if events else ["אין אירועים קרובים ביומן"]
+                if today <= event_date <= end_date:
+                    if event_date == today:    day_label = f"היום {time_str}"
+                    elif event_date == today+timedelta(1): day_label = f"מחר {time_str}"
+                    else:
+                        days_diff = (event_date - today).days
+                        day_label = f"בעוד {days_diff} ימים {time_str} ({event_date.strftime('%d/%m')})"
+                    events.append({"summary": summary, "date": event_date,
+                                   "label": day_label, "time": time_str})
+            except: continue
+        return events
     except Exception as e:
         print(f"iCal error: {e}")
-        return ["לא ניתן לטעון את היומן — בדוק את GCAL_ICAL_URL"]
+        return []
 
-def get_calendar_events():
-    ical_url = os.environ.get('GCAL_ICAL_URL', '')
-    if not ical_url:
-        return ["יומן לא מוגדר — הוסף GCAL_ICAL_URL לסודות GitHub"]
-    return parse_ical_events(ical_url)
+def filter_events(all_events, keywords, days=2):
+    il = pytz.timezone('Asia/Jerusalem')
+    today = datetime.now(il).date()
+    cutoff = today + timedelta(days=days)
+    result = []
+    for ev in all_events:
+        if ev["date"] > cutoff: continue
+        text = ev["summary"].lower()
+        if any(k.lower() in text for k in keywords):
+            result.append(f"{ev['label']} — {ev['summary']}")
+    return result
+
+def get_calendar_general(all_events):
+    """Today + tomorrow events only, excluding medical/webinar"""
+    il = pytz.timezone('Asia/Jerusalem')
+    today = datetime.now(il).date()
+    tomorrow = today + timedelta(1)
+    result = []
+    for ev in all_events:
+        if ev["date"] not in (today, tomorrow): continue
+        text = ev["summary"].lower()
+        is_medical = any(k.lower() in text for k in MEDICAL_KW)
+        is_webinar  = any(k.lower() in text for k in WEBINAR_KW)
+        result.append(f"{ev['label']} — {ev['summary']}")
+    return result if result else ["אין אירועים להיום ומחר"]
+
+def get_package_updates():
+    """Search Gmail via IMAP for recent package tracking emails"""
+    try:
+        mail = imaplib.IMAP4_SSL('imap.gmail.com', 993)
+        mail.login(GMAIL_USER, GMAIL_PASS)
+        mail.select('inbox')
+        since_date = (datetime.now() - timedelta(days=30)).strftime("%d-%b-%Y")
+        packages = []
+        _, msg_ids = mail.search(None, f'SINCE {since_date}')
+        ids = msg_ids[0].split()[-50:] if msg_ids[0] else []  # last 50
+        for mid in reversed(ids):
+            _, data = mail.fetch(mid, '(RFC822.HEADER)')
+            if not data or not data[0]: continue
+            msg = emaillib.message_from_bytes(data[0][1])
+            subject_raw = msg.get('Subject', '')
+            from_raw    = msg.get('From', '').lower()
+            # Decode subject
+            parts = decode_header(subject_raw)
+            subject = ''
+            for part, enc in parts:
+                if isinstance(part, bytes):
+                    subject += part.decode(enc or 'utf-8', errors='replace')
+                else:
+                    subject += part
+            subject_l = subject.lower()
+            from_match = any(s in from_raw for s in PACKAGE_SENDERS)
+            subj_match = any(s in subject_l for s in PACKAGE_SUBJECTS)
+            if from_match or subj_match:
+                packages.append(subject[:80])
+            if len(packages) >= 3: break
+        mail.logout()
+        return packages
+    except Exception as e:
+        print(f"Package IMAP error: {e}")
+        return []
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -97,6 +162,18 @@ def send_email(subject, html_body):
         s.login(GMAIL_USER, GMAIL_PASS)
         s.sendmail(GMAIL_USER, GMAIL_USER, msg.as_string())
     print("Email sent")
+
+def item_html(text, border='#1976d2', bg='#f4f9ff'):
+    return (f'<div style="margin-bottom:8px;background:{bg};border-radius:10px;'
+            f'border-right:4px solid {border};padding:11px 14px;'
+            f'font-size:15px;font-weight:700;color:#0d1b2a">{text}</div>')
+
+def section_html(icon, title, items, border='#1976d2', bg='#f4f9ff', color='#0d2d5e'):
+    if not items: return ''
+    items_html = ''.join(item_html(i, border, bg) for i in items)
+    return (f'<div style="padding:16px 24px 12px;border-bottom:1px solid #e8f4fd">'
+            f'<div style="font-size:16px;font-weight:900;color:{color};margin-bottom:12px">{icon} {title}</div>'
+            f'{items_html}</div>')
 
 def main():
     il = pytz.timezone('Asia/Jerusalem')
@@ -122,27 +199,49 @@ def main():
             "השבת היא להטעין, לא לדאוג — שמור על זה"]
     tip = tips[now.weekday()]
 
+    # Weather
     weather_harish = get_weather("Harish, Israel", "חריש")
     weather_ta     = get_weather("Tel Aviv, Israel", "תל אביב")
-    calendar_events = get_calendar_events()
 
-    # For evening: filter out events already shown in morning
+    # Calendar — load all events once
+    ical_url = os.environ.get('GCAL_ICAL_URL', '')
+    all_events = parse_ical_all(ical_url, days_ahead=30) if ical_url else []
+
+    calendar_events = get_calendar_general(all_events) if ical_url else ["יומן לא מוגדר — הוסף GCAL_ICAL_URL לסודות GitHub"]
+    medical_events  = filter_events(all_events, MEDICAL_KW, days=30)
+    webinar_events  = filter_events(all_events, WEBINAR_KW, days=14)
+
+    # Packages via Gmail IMAP
+    package_items = get_package_updates()
+
+    # Evening: filter out morning items
     cache = load_cache()
     if session == 'evening':
         calendar_events = [e for e in calendar_events if not is_seen_morning(e, cache)]
 
-    events_str = "\n".join(f"  • {e}" for e in calendar_events)
+    # Plain text
+    def fmt_list(items, empty="אין עדכונים"):
+        return "\n".join(f"  • {i}" for i in items) if items else f"  {empty}"
 
     plain = (f"{emoji} {greeting}\n{day_name} | {date_he}\n\n"
              f"🌤 מזג אוויר:\n  {weather_harish}\n  {weather_ta}\n\n"
-             f"📅 סדר יום:\n{events_str}\n\n"
-             f"💡 {tip_lbl}: {tip}\n\n{footer}")
+             f"📅 סדר יום:\n{fmt_list(calendar_events)}\n")
+    if medical_events:
+        plain += f"\n🏥 בדיקות רפואיות:\n{fmt_list(medical_events)}\n"
+    if webinar_events:
+        plain += f"\n🎓 וובינרים קרובים:\n{fmt_list(webinar_events)}\n"
+    if package_items:
+        plain += f"\n📦 משלוחים:\n{fmt_list(package_items)}\n"
+    plain += f"\n💡 {tip_lbl}: {tip}\n\n{footer}"
 
-    events_html = "".join(
-        f'<div style="margin-bottom:8px;background:#f4f9ff;border-radius:10px;'
-        f'border-right:4px solid #1976d2;padding:11px 14px;font-size:15px;font-weight:700;color:#0d1b2a">{e}</div>'
-        for e in calendar_events
-    )
+    # HTML
+    weather_html = (item_html(weather_harish, '#1976d2', '#f4f9ff') +
+                    item_html(weather_ta,     '#1976d2', '#f4f9ff'))
+    cal_html = ''.join(item_html(e) for e in calendar_events)
+
+    medical_sec = section_html('🏥', 'בדיקות רפואיות', medical_events, '#c62828', '#fff5f5', '#b71c1c') if medical_events else ''
+    webinar_sec = section_html('🎓', 'וובינרים קרובים', webinar_events, '#6a1b9a', '#fdf4ff', '#6a1b9a') if webinar_events else ''
+    package_sec = section_html('📦', 'משלוחים', package_items, '#e65100', '#fff8f0', '#bf360c') if package_items else ''
 
     html_body = f"""<!DOCTYPE html><html dir="rtl" lang="he">
 <head><meta charset="UTF-8">
@@ -151,9 +250,6 @@ def main():
 .card{{max-width:600px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 32px rgba(21,101,192,.15)}}
 .hdr{{background:linear-gradient(135deg,#0d2d5e,#1565c0,#1976d2);padding:20px 24px}}
 .stripe{{height:4px;background:linear-gradient(90deg,#0d47a1,#1976d2,#42a5f5,#1976d2,#0d47a1)}}
-.sec{{padding:16px 24px 12px;border-bottom:1px solid #e8f4fd}}
-.sec-title{{font-size:16px;font-weight:900;color:#0d2d5e;margin-bottom:12px}}
-.weather{{margin-bottom:8px;background:#f4f9ff;border-radius:10px;border-right:4px solid #1976d2;padding:11px 14px;font-size:15px;font-weight:700;color:#0d1b2a}}
 .tip{{margin:10px 24px 20px;background:#0d2d5e;border-radius:12px;padding:16px 18px}}
 .ftr{{background:#f7f9fc;padding:14px;text-align:center;font-size:12px;font-weight:700;color:#1565c0}}</style>
 </head><body><div class="card">
@@ -162,11 +258,13 @@ def main():
   <div style="font-size:24px;font-weight:900;color:#fff;margin-bottom:4px">{emoji} {greeting}</div>
   <div style="font-size:14px;font-weight:700;color:#bbdefb">📋 סדר היום האישי שלך</div>
 </div><div class="stripe"></div>
-<div class="sec"><div class="sec-title">🌤 מזג אוויר</div>
-<div class="weather">{weather_harish}</div>
-<div class="weather">{weather_ta}</div></div>
-<div class="sec"><div class="sec-title">📅 סדר יום</div>
-{events_html}</div>
+<div style="padding:16px 24px 12px;border-bottom:1px solid #e8f4fd">
+  <div style="font-size:16px;font-weight:900;color:#0d2d5e;margin-bottom:12px">🌤 מזג אוויר</div>
+  {weather_html}</div>
+<div style="padding:16px 24px 12px;border-bottom:1px solid #e8f4fd">
+  <div style="font-size:16px;font-weight:900;color:#0d2d5e;margin-bottom:12px">📅 סדר יום</div>
+  {cal_html}</div>
+{medical_sec}{webinar_sec}{package_sec}
 <div class="tip">
   <div style="font-size:11px;font-weight:900;color:#90caf9;letter-spacing:2px;margin-bottom:8px">💡 {tip_lbl}</div>
   <div style="font-size:15px;color:#fff;line-height:1.65;font-weight:700">{tip}</div>
