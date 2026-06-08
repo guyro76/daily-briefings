@@ -151,7 +151,7 @@ def main():
 <div class="sec"><div class="sec-title" style="color:#6a1b9a">🎬 קולנוע</div>
 {''.join(html_item(i,'#8e24aa','#fdf4ff') for i in film_items)}</div>
 <div class="sec"><div class="sec-title" style="color:#c62828">🎞 פלטפורמות סטאריאאאפ</div>
-''.join(html_item(i,'#e53935','#fff5f5') for i in stream_items)}</div>
+{''.join(html_item(i,'#e53935','#fff5f5') for i in stream_items)}</div>
 <div class="tip">
   <div style="font-size:11px;font-weight:900;color:#9fa8da;letter-spacing:2px;margin-bottom:8px">💡 {tip_lbl}</div>
   <div style="font-size:16px;color:#fff;line-height:1.65;font-weight:700">{tip}</div>
