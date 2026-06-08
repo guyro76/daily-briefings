@@ -5,6 +5,9 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   personal:
     name: Personal Briefing
@@ -17,7 +20,17 @@ jobs:
       - name: Install dependencies
         run: pip install pytz
       - name: Run personal briefing
+        env:
+          GCAL_ICAL_URL: ${{ secrets.GCAL_ICAL_URL }}
         run: python scripts/personal_briefing.py
+      - name: Save cache
+        if: always()
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add cache/ || true
+          git diff --staged --quiet || git commit -m "cache: morning personal"
+          git push || true
 
   marketing:
     name: Marketing Briefing
@@ -31,6 +44,14 @@ jobs:
         run: pip install pytz
       - name: Run marketing briefing
         run: python scripts/marketing_briefing.py
+      - name: Save cache
+        if: always()
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add cache/ || true
+          git diff --staged --quiet || git commit -m "cache: morning marketing"
+          git push || true
 
   tv-cinema:
     name: TV Cinema Briefing
@@ -44,3 +65,11 @@ jobs:
         run: pip install pytz
       - name: Run TV/Cinema briefing
         run: python scripts/tv_cinema_briefing.py
+      - name: Save cache
+        if: always()
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add cache/ || true
+          git diff --staged --quiet || git commit -m "cache: morning tv-cinema"
+          git push || true
