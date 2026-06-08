@@ -19,13 +19,27 @@ GMAIL_USER = "guyro76@gmail.com"
 GMAIL_PASS = "yscqggafoomwrais"
 
 BANNED_ENT = {'war','military','combat','attack','hostage','massacre','shooting','bombing'}
-TV_FEEDS   = ["https://www.hollywoodreporter.com/feed/", "https://deadline.com/category/television/feed/"]
-FILM_FEEDS = ["https://www.hollywoodreporter.com/feed/", "https://deadline.com/category/film/feed/"]
-STREAM_FEEDS = ["https://variety.com/v/television/feed/", "https://deadline.com/category/streaming/feed/"]
+TV_FEEDS   = [
+    "https://deadline.com/category/television/feed/",
+    "https://tvline.com/feed/",
+    "https://www.hollywoodreporter.com/c/tv/feed/",
+]
+FILM_FEEDS = [
+    "https://deadline.com/category/film/feed/",
+    "https://www.hollywoodreporter.com/c/movies/feed/",
+    "https://collider.com/category/movie-news/feed/",
+]
+STREAM_FEEDS = [
+    "https://www.whats-on-netflix.com/feed/",
+    "https://tvline.com/feed/",
+    "https://decider.com/feed/",
+    "https://variety.com/v/digital/feed/",
+    "https://deadline.com/category/streaming/feed/",
+]
 
 TV_KW    = ["series","season","episode","premiere","TV","show","drama","comedy","HBO","Netflix","Disney","Apple","streaming"]
 FILM_KW  = ["film","movie","cinema","box office","feature","documentary","thriller","director","cast","trailer"]
-STREAM_KW= ["Netflix","Disney+","HBO Max","Apple TV","Prime Video","Hulu","streaming","release","debut"]
+STREAM_KW= ["Netflix","HBO","Max","Disney","Disney+","Prime Video","Amazon","Peacock","Apple TV","Hulu","streaming","stream","release","debut","season","series","episode","premiere","show","series","watch","renewed","canceled","trailer"]
 
 def banned_en(text):
     tl = (text or '').lower()
@@ -60,7 +74,7 @@ def get_items(feeds, kw, count, cache, session, global_seen=None):
         if len(results) >= count: break
     return results
 
-FALLBACK = {"title": "—", "desc": "אין עדכונים בידורניים נוספים כרגע.", "link": "", "img": None}
+FALLBACK = {"title": "—", "desc": "אין עדכונים נוספים כרגע.", "link": "", "img": None}
 
 def html_item(item, border, bg):
     img_tag = (f'<img src="{item["img"]}" style="width:100%;border-radius:8px;margin-bottom:10px;'
