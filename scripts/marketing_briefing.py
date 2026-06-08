@@ -109,7 +109,7 @@ def main():
     total = len([x for x in ai+mktg+soc if x['title'] != '—'])
     if total < 3:
         print(f"ABORT: only {total} real items"); sys.exit(1)
-    while len(mitg)<3: mktg.append(FALLBACK)
+    while len(mktg)<3: mktg.append(FALLBACK)
     while len(ai)<3:   ai.append(FALLBACK)
     while len(soc)<3:  soc.append(FALLBACK)
     def fmt(items): return "\n".join(f"• {i['title']}: {i['desc'][:120]}" for i in items)
