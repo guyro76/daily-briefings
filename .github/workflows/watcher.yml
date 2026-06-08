@@ -1,0 +1,56 @@
+name: Briefing Watcher
+
+on:
+  schedule:
+    - cron: '30 4 * * *'
+    - cron: '30 15 * * *'
+  workflow_dispatch:
+
+jobs:
+  watch:
+    name: Check Briefing Status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check recent workflow runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          NOW=$(date +%s)
+          ALERT=""
+
+          check_workflow() {
+            WF_NAME="$1"
+            WF_FILE="$2"
+            WINDOW_SECS="$3"
+            RUN=$(gh api "repos/$REPO/actions/workflows/$WF_FILE/runs?per_page=1" \
+              --jq '.workflow_runs[0] | {status,conclusion,created_at}')
+            CONCLUSION=$(echo "$RUN" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('conclusion','none'))")
+            CREATED=$(echo "$RUN" | python3 -c "import json,sys,datetime; d=json.load(sys.stdin); print(d.get('created_at',''))")
+            if [ -z "$CREATED" ]; then
+              ALERT="$ALERT\n❌ $WF_NAME: לא נמצאו ריצות"
+              return
+            fi
+            AGE=$(python3 -c "
+          import datetime, sys
+          t = '$CREATED'
+          dt = datetime.datetime.fromisoformat(t.replace('Z','+00:00'))
+          age = (datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds()
+          print(int(age))
+          ")
+            if [ "$CONCLUSION" != "success" ] || [ "$AGE" -gt "$WINDOW_SECS" ]; then
+              ALERT="$ALERT\n⚠️ $WF_NAME: $CONCLUSION (לפני ${AGE}ש)"
+            fi
+          }
+
+          check_workflow "Morning Briefing" "morning.yml" 7200
+          check_workflow "Evening Briefing" "evening.yml" 7200
+
+          if [ -n "$ALERT" ]; then
+            MSG="🚨 התראת בריפינג יומי:\n$ALERT"
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+              -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}&text=$MSG" || true
+            echo "Alert sent"
+          else
+            echo "All briefings OK"
+          fi
