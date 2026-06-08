@@ -31,12 +31,13 @@ def banned_en(text):
     tl = (text or '').lower()
     return any(w in tl for w in BANNED_ENT) or is_banned(text)
 
-def get_items(feeds, kw, count, cache, session):
+def get_items(feeds, kw, count, cache, session, global_seen=None):
+    if global_seen is None: global_seen = set()
     seen = set()
     results = []
     for url in feeds:
         for title, desc, link, rss_img in parse_rss(url, 20):
-            if not title or title in seen: continue
+            if not title or title in seen or title in global_seen: continue
             if banned_en(title) or banned_en(desc): continue
             if kw and not any(k.lower() in title.lower() or k.lower() in desc.lower() for k in kw): continue
             if session == 'evening' and is_seen_morning(title, cache):
@@ -53,6 +54,7 @@ def get_items(feeds, kw, count, cache, session):
                     art_desc_he = translate_he(art_desc) if not is_hebrew(art_desc) else art_desc
                     desc_he = art_desc_he
             seen.add(title)
+            global_seen.add(title)
             results.append({"title": title_he, "desc": desc_he[:400], "link": link, "img": img})
             if len(results) >= count: break
         if len(results) >= count: break
@@ -114,9 +116,10 @@ def main():
             "יום ראשון הוא היום עם הכי הרבה פרמיירות בנטפליקס העולמי"]
     tip = tips[now.weekday()]
     cache = load_cache()
-    tv_items     = get_items(TV_FEEDS,     TV_KW,     3, cache, session)
-    film_items   = get_items(FILM_FEEDS,   FILM_KW,   3, cache, session)
-    stream_items = get_items(STREAM_FEEDS, STREAM_KW, 3, cache, session)
+    global_seen = set()
+    tv_items     = get_items(TV_FEEDS,     TV_KW,     3, cache, session, global_seen)
+    film_items   = get_items(FILM_FEEDS,   FILM_KW,   3, cache, session, global_seen)
+    stream_items = get_items(STREAM_FEEDS, STREAM_KW, 3, cache, session, global_seen)
     total = len([x for x in tv_items+film_items+stream_items if x['title'] != '—'])
     if total < 3:
         print(f"ABORT: only {total} real items"); sys.exit(1)
@@ -127,7 +130,7 @@ def main():
     plain = (f"{emoji} {greeting} — טלוויזיה וקולנוע | {date_he}\n\n"
              f"📺 סדרות טלוויזיה:\n{fmt(tv_items)}\n\n"
              f"🎬 קולנוע:\n{fmt(film_items)}\n\n"
-             f"🎞 פלטפורמות סטאריאאאפ:\n{fmt(stream_items)}\n\n"
+             f"🎞 פלטפורמות סטרימינג:\n{fmt(stream_items)}\n\n"
              f"💡 {tip_lbl}: {tip}\n{footer}")
     html_body = f"""<!DOCTYPE html><html dir="rtl" lang="he">
 <head><meta charset="UTF-8">
@@ -150,7 +153,7 @@ def main():
 {''.join(html_item(i,'#3949ab','#f0f2ff') for i in tv_items)}</div>
 <div class="sec"><div class="sec-title" style="color:#6a1b9a">🎬 קולנוע</div>
 {''.join(html_item(i,'#8e24aa','#fdf4ff') for i in film_items)}</div>
-<div class="sec"><div class="sec-title" style="color:#c62828">🎞 פלטפורמות סטאריאאאפ</div>
+<div class="sec"><div class="sec-title" style="color:#c62828">🎞 פלטפורמות סטרימינג</div>
 {''.join(html_item(i,'#e53935','#fff5f5') for i in stream_items)}</div>
 <div class="tip">
   <div style="font-size:11px;font-weight:900;color:#9fa8da;letter-spacing:2px;margin-bottom:8px">💡 {tip_lbl}</div>
@@ -170,3 +173,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
